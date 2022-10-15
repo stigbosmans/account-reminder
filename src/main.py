@@ -1,42 +1,16 @@
 import datetime
 import os
-import requests
 import logging
 from datetime import datetime
-from sendgrid import SendGridAPIClient
-from sendgrid.helpers.mail import Mail
+import schedule
+import time
 
-notion_token = os.getenv("NOTION_TOKEN")
+from notion_api import get_notion_database, get_notion_page
+from sendgrid_api import send_mail
 db = os.getenv("DATABASE_ID")
-sendgrid_token = os.getenv("SENDGRID_TOKEN")
+
 
 logging.getLogger().setLevel(logging.INFO)
-
-headers = {
-    "Authorization": "Bearer " + notion_token,
-    "Content-Type": "application/json",
-    "Notion-Version": "2022-06-28"
-}
-
-
-def get_notion_database(db_id):
-    url = f"https://api.notion.com/v1/databases/{db_id}/query"
-    res = requests.request("POST", url, headers=headers)
-    if res.status_code == 200:
-        data = res.json()
-        return data
-    else:
-        logging.error(f"Couldn't retrieve data for db {db_id}. Status code: ", res.status_code)
-
-
-def get_notion_page(page_id):
-    url = f"https://api.notion.com/v1/pages/{page_id}"
-    res = requests.request("GET", url, headers=headers)
-    if res.status_code == 200:
-        data = res.json()
-        return data
-    else:
-        logging.error(f"Couldn't retrieve data for page {page_id}. Status code: ", res.status_code)
 
 
 def check_if_payment_is_overtime(page_properties):
@@ -55,36 +29,39 @@ def check_if_payment_is_overtime(page_properties):
             end_date = datetime.strptime(props["end_date"], "%Y-%m-%d")
             today = datetime.now()
             if end_date < today:
-                send_mail_reminder(props)
+                send_reminder(props)
     except KeyError:
         logging.error("Page ignored due to key error", page_properties)
 
 
-def send_mail_reminder(mail_data):
-    message = Mail(
-        from_email='noreply@rollo-innovators.be',
-        to_emails=("stigbosmans@gmail.com", "stig.bosmans@rollo.ml"),
-        subject=f'Tegoed {mail_data["service"]}',
-        html_content=f"""
-        Beste {mail_data["participant_name"]},
-        Uit onze records blijkt dat u nog een tegoed van {mail_data["amount"]} euro verschuldigd bent 
-        vanwege het gebruik van {mail_data["service"]} 
-        voor de periode van {mail_data["start_date"]} tot {mail_data["end_date"]}.<br/>
-        Gelieve, dit spoedig te storten op het rekeningnummer: BE21 9731 3149 0103 en na betaling een Whatsappje te sturen naar
-        uw contactpersoon Stig Bosmans.<br/>
-        Let op: u kan niet terugmailen op dit adres.
-        <br/><br/>
-        Stig Bosmans
-        stig.bosmans@rollo.ml
-        """
-    )
-    sg = SendGridAPIClient(sendgrid_token)
-    sg.send(message)
-    logging.info(f"Mail send to {mail_data['participant_email']}")
+def send_reminder(mail_data):
+    mail_content = f"""
+            Beste {mail_data["participant_name"]},
+            Uit onze records blijkt dat u nog een tegoed van {mail_data["amount"]} euro verschuldigd bent 
+            vanwege het gebruik van {mail_data["service"]} 
+            voor de periode van {mail_data["start_date"]} tot {mail_data["end_date"]}.<br/>
+            Gelieve, dit spoedig te storten op het rekeningnummer: BE21 9731 3149 0103 en na betaling een Whatsappje te sturen naar
+            uw contactpersoon Stig Bosmans.<br/>
+            Let op: u kan niet terugmailen op dit adres.
+            <br/><br/>
+            Stig Bosmans
+            stig.bosmans@rollo.ml
+            """
+    send_mail("noreply@rollo-innovators.be", ["stigbosmans@gmail.com", mail_data["participant_email"]],
+              f'Tegoed {mail_data["service"]}', mail_content)
 
 
-database = get_notion_database(db)
-for i in database["results"]:
-    check_if_payment_is_overtime(i["properties"])
+def check_late_payers():
+    logging.info(f'Checking datebase for late payers at {datetime.now().strftime("%Y-%m-%d %H:%M")}')
+    database = get_notion_database(db)
+    for i in database["results"]:
+        check_if_payment_is_overtime(i["properties"])
 
 
+schedule.every(1).week.do(check_late_payers)
+check_late_payers()
+
+logging.info("Schedule is running")
+while 1:
+    schedule.run_pending()
+    time.sleep(1)
